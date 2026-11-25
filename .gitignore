@@ -1,0 +1,47 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Auto-generated Tauri build files
+/src-tauri/gen/
+
+# Node / Vite frontend artifacts
+/ui/node_modules/
+/ui/dist/
+*.tsbuildinfo
+
+# Generated models, installers, binaries & local runtime outputs
+/out/
+/projects/
+preferences.json
+*.stl
+*.STL
+*.3mf
+*.3MF
+*.exe
+*.msi
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+
+# Internal developer notes & local launch scripts
+DEVELOPER_GUIDE.md
+start.bat
+
+# Environment secrets, signing keys & logs
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.log
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+*.code-workspace

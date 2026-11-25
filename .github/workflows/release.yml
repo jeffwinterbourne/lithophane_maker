@@ -1,0 +1,217 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    name: Prepare Draft Release
+    runs-on: ubuntu-22.04
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Verify release tag matches workspace versions
+        shell: bash
+        run: |
+          TAG="${{ github.ref_name }}"
+          TAG_VER="${TAG#v}"
+          TAURI_VER=$(node -e "console.log(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version)")
+          CARGO_VER=$(node -e "const m=require('fs').readFileSync('Cargo.toml','utf8').match(/^version\s*=\s*\"([^\"]+)\"/m); console.log(m ? m[1] : '')")
+          UI_VER=$(node -e "console.log(JSON.parse(require('fs').readFileSync('ui/package.json','utf8')).version)")
+          echo "Tag: $TAG ($TAG_VER) | Tauri: $TAURI_VER | Cargo: $CARGO_VER | UI: $UI_VER"
+          if [[ "$TAG_VER" != "$TAURI_VER" || "$TAG_VER" != "$CARGO_VER" || "$TAG_VER" != "$UI_VER" ]]; then
+            echo "::error::Tag version ($TAG_VER) must match tauri.conf.json ($TAURI_VER), Cargo.toml ($CARGO_VER), and ui/package.json ($UI_VER)."
+            exit 1
+          fi
+
+      - name: Create or reuse draft release
+        id: release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ github.ref_name }}';
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 50,
+            });
+            const existing = releases.find((r) => r.tag_name === tag);
+            if (existing) {
+              if (!existing.draft) {
+                core.setFailed(`Release for ${tag} already exists and is already published.`);
+                return;
+              }
+              core.info(`Reusing existing draft release ${existing.id} for ${tag}`);
+              core.setOutput('release_id', String(existing.id));
+              return;
+            }
+            const { data: created } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `Lithophane Studio ${tag}`,
+              draft: true,
+              prerelease: tag.includes('-'),
+              generate_release_notes: true,
+            });
+            core.info(`Created draft release ${created.id} for ${tag}`);
+            core.setOutput('release_id', String(created.id));
+
+  build-desktop:
+    name: Build Desktop (${{ matrix.target }})
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: ""
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            args: "--target x86_64-apple-darwin"
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo artifacts
+        uses: swatinem/rust-cache@v2
+
+      - name: Install Linux Tauri dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install UI dependencies
+        run: npm --prefix ui ci
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2
+
+      - name: Build & upload desktop installers
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        with:
+          projectPath: .
+          tauriScript: tauri
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          releaseDraft: true
+          args: ${{ matrix.args }}
+
+  build-cli:
+    name: Build CLI (${{ matrix.target }})
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo artifacts
+        uses: swatinem/rust-cache@v2
+
+      - name: Build litho CLI
+        run: cargo build --release --package litho-cli --target ${{ matrix.target }}
+
+      - name: Package Windows CLI archive
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $stage = "cli-stage"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/litho.exe" $stage
+          Copy-Item "README.md", "LICENSE" $stage
+          $archive = "litho-${{ github.ref_name }}-${{ matrix.target }}.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $archive -Force
+          echo "CLI_ARCHIVE=$archive" >> $env:GITHUB_ENV
+
+      - name: Package Unix CLI archive
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          mkdir -p cli-stage
+          cp "target/${{ matrix.target }}/release/litho" cli-stage/
+          cp README.md LICENSE cli-stage/
+          ARCHIVE="litho-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+          tar -C cli-stage -czf "$ARCHIVE" litho README.md LICENSE
+          echo "CLI_ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload CLI archive to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" "${{ env.CLI_ARCHIVE }}" --clobber
+
+  publish-release:
+    name: Publish Release
+    needs: [create-release, build-desktop, build-cli]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Publish draft release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: Number('${{ needs.create-release.outputs.release_id }}'),
+              draft: false,
+            });
