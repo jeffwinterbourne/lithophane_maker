@@ -2,6 +2,11 @@
 
 All notable changes to **Lithophane Studio** are documented in this file.
 
+## [1.0.1] - 2026-11-26
+
+### Fixed
+- CI workflow frontend typecheck now runs in `ui/` so `tsc` locates `tsconfig.json`.
+
 ## [1.0.0] - 2026-11-25
 
 ### Added

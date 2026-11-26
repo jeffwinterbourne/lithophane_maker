@@ -9,6 +9,9 @@ jobs:
   frontend:
     name: Frontend Typecheck & Build
     runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: ui
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,13 +24,13 @@ jobs:
           cache-dependency-path: ui/package-lock.json
 
       - name: Install UI dependencies
-        run: npm --prefix ui ci
+        run: npm ci
 
       - name: Typecheck UI
-        run: npm --prefix ui exec -- tsc --noEmit
+        run: npx tsc --noEmit
 
       - name: Build UI bundle
-        run: npm --prefix ui run build
+        run: npm run build
 
   rust:
     name: Clippy & Tests (${{ matrix.os }})
